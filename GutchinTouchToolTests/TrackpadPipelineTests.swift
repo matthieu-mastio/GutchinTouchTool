@@ -593,4 +593,38 @@ final class TrackpadPipelineTests: XCTestCase {
         UserDefaults.standard.removeObject(forKey: "GTTGlobalEnabled")
         monitor.unregisterAll()
     }
+
+    // MARK: - Mouse suppression & click-drag tests
+
+    func testNoDrawingTriggersDoesNotActivateMouseSuppression() {
+        let trigger = Trigger(name: "Swipe", input: .trackpadGesture(.twoFingerSwipeUp))
+        let monitor = TrackpadMonitor()
+        monitor.registerTriggers([trigger])
+
+        XCTAssertFalse(monitor.isMouseSuppressedForTest, "Mouse suppression should be inactive initially")
+
+        let now = Date().timeIntervalSince1970
+        for i in 0..<25 {
+            monitor.handleMultitouchFrame(rawTouches: nil, numTouches: 1, timestamp: now + Double(i) * 0.01)
+        }
+
+        XCTAssertFalse(monitor.isMouseSuppressedForTest, "Mouse suppression should NOT be activated without drawing triggers")
+        monitor.unregisterAll()
+    }
+
+    func testTriangleGestureDoesNotActivateMouseSuppression() {
+        let trigger = Trigger(name: "Triangle", input: .trackpadGesture(.drawTriangle))
+        let monitor = TrackpadMonitor()
+        monitor.registerTriggers([trigger])
+
+        XCTAssertFalse(monitor.isMouseSuppressedForTest, "Mouse suppression should be inactive initially")
+
+        let now = Date().timeIntervalSince1970
+        for i in 0..<25 {
+            monitor.handleMultitouchFrame(rawTouches: nil, numTouches: 1, timestamp: now + Double(i) * 0.01)
+        }
+
+        XCTAssertFalse(monitor.isMouseSuppressedForTest, "Triangle gesture tracking must never suppress mouse speculatively")
+        monitor.unregisterAll()
+    }
 }

@@ -163,9 +163,25 @@ class TrackpadMonitor {
     private var circleStartTime: Date?                      // when circling started
     private var circleFireCount: Int = 0                    // how many times we've fired this session
     private var trackpadIsPressed = false                   // true when trackpad is clicked down
-    private var circleDrawingActive = false                 // true while circle gesture is being drawn
-    private var mouseEventTap: CFMachPort?                  // CGEvent tap for suppressing mouse during circle
+    private var circleDrawingActive = false                 // true while circle or edge slide mouse suppression is active
+    private var mouseEventTap: CFMachPort?                  // CGEvent tap for suppressing mouse during circle or edge slide
     private var mouseEventTapRunLoopSource: CFRunLoopSource?
+
+    private enum MouseSuppressionReason {
+        case none
+        case circle
+        case edgeSlide
+    }
+    private var mouseSuppressionReason: MouseSuppressionReason = .none
+
+    // Active gesture flags based on registered triggers
+    private var hasCircleTriggers = false
+    private var hasTriangleTriggers = false
+    private var hasEdgeSlideTriggers = false
+
+    var isMouseSuppressedForTest: Bool {
+        circleDrawingActive
+    }
 
     // Triangle gesture detection (1-finger pressing down and drawing)
     private var trianglePoints: [(x: Float, y: Float)] = []
@@ -174,7 +190,7 @@ class TrackpadMonitor {
     // Edge slider detection (1-finger press + slide along edge, fires repeatedly)
     private var edgeSlideLastY: Float?
     private var edgeSlideEdge: EdgeSide?
-    private let edgeSlideZoneWidth: Float = 0.15   // leftmost/rightmost 15%
+    private let edgeSlideZoneWidth: Float = 0.08   // leftmost/rightmost 8% (edge margin)
     private let edgeSlideStep: Float = 0.04        // fire every ~4% of trackpad height
 
     private enum EdgeSide { case left, right }
@@ -201,6 +217,17 @@ class TrackpadMonitor {
         }
 
         guard !registeredTriggers.isEmpty else { return }
+
+        hasCircleTriggers = registeredTriggers.contains {
+            $0.gesture == .circleClockwise || $0.gesture == .circleCounterClockwise
+        }
+        hasTriangleTriggers = registeredTriggers.contains {
+            $0.gesture == .drawTriangle
+        }
+        hasEdgeSlideTriggers = registeredTriggers.contains {
+            $0.gesture == .leftEdgeSlideUp || $0.gesture == .leftEdgeSlideDown ||
+            $0.gesture == .rightEdgeSlideUp || $0.gesture == .rightEdgeSlideDown
+        }
 
         setupNSEventMonitors()
         setupMultitouchMonitoring()
@@ -322,6 +349,9 @@ class TrackpadMonitor {
         // Update visual press state from real-time button query every frame
         // This is authoritative — avoids stale state from mismatched down/up events
         let anyButtonDown = NSEvent.pressedMouseButtons != 0
+        if !anyButtonDown {
+            TrackpadMonitor.pendingSuppressClick = false
+        }
         LiveTouchState.shared.setPressed(anyButtonDown && !liveTouchPoints.isEmpty)
         LiveTouchState.shared.update(liveTouchPoints)
 
@@ -528,7 +558,8 @@ class TrackpadMonitor {
         }
 
         // --- Drawing gesture detection (1-finger pressing down and drawing) ---
-        if activeFingersCount == 1, fingerXPositions.count == 1,
+        let has1FingerGestures = hasCircleTriggers || hasTriangleTriggers || hasEdgeSlideTriggers
+        if has1FingerGestures, activeFingersCount == 1, fingerXPositions.count == 1,
            let raw = rawTouches {
             let t0 = readTouch(from: raw, at: 0)
             let x = t0.x
@@ -538,9 +569,9 @@ class TrackpadMonitor {
             // trackpadIsPressed to avoid race conditions between threads
             let isClickedNow = NSEvent.pressedMouseButtons & 0x1 != 0
             if x > 0.01 && y > 0.01 && isClickedNow {
-                trackCirclePoint(x: x, y: y)
-                trackTrianglePoint(x: x, y: y)
-                trackEdgeDrag(x: x, y: y)
+                if hasCircleTriggers { trackCirclePoint(x: x, y: y) }
+                if hasTriangleTriggers { trackTrianglePoint(x: x, y: y) }
+                if hasEdgeSlideTriggers { trackEdgeDrag(x: x, y: y) }
             } else {
                 resetCircleState()
                 resetTriangleState()
@@ -596,6 +627,7 @@ class TrackpadMonitor {
                     circleFireCount = 0
                     circleStartTime = nil
                     circleLastAngle = angle
+                    stopSuppressingMouse(for: .circle)
                 }
                 return
             }
@@ -603,7 +635,7 @@ class TrackpadMonitor {
             // Progressive firing: fire every N degrees of rotation, accelerating over time.
             if circleStartTime == nil {
                 circleStartTime = Date()
-                startSuppressingMouse()
+                startSuppressingMouse(for: .circle)
             }
 
             let elapsed = Date().timeIntervalSince(circleStartTime ?? Date())
@@ -678,46 +710,62 @@ class TrackpadMonitor {
         circleLastFiredAngle = 0
         circleStartTime = nil
         circleFireCount = 0
+        stopSuppressingMouse(for: .circle)
     }
 
-    private func startSuppressingMouse() {
+    private func startSuppressingMouse(for reason: MouseSuppressionReason) {
         let suppress = UserDefaults.standard.object(forKey: "GTTSuppressMouseDuringDrawing") as? Bool ?? true
-        guard suppress, !circleDrawingActive else { return }
+        guard suppress else { return }
+
+        mouseSuppressionReason = reason
+        guard !circleDrawingActive else { return }
         circleDrawingActive = true
 
-        let eventMask: CGEventMask = (1 << CGEventType.mouseMoved.rawValue)
-            | (1 << CGEventType.leftMouseDragged.rawValue)
-            | (1 << CGEventType.rightMouseDragged.rawValue)
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self, self.circleDrawingActive, self.mouseEventTap == nil else { return }
 
-        guard let tap = CGEvent.tapCreate(
-            tap: .cgSessionEventTap,
-            place: .headInsertEventTap,
-            options: .defaultTap,
-            eventsOfInterest: eventMask,
-            callback: { _, _, event, _ in
-                // Suppress the event by returning nil
-                return nil
-            },
-            userInfo: nil
-        ) else { return }
+            let eventMask: CGEventMask = (1 << CGEventType.mouseMoved.rawValue)
+                | (1 << CGEventType.leftMouseDragged.rawValue)
+                | (1 << CGEventType.rightMouseDragged.rawValue)
 
-        mouseEventTap = tap
-        let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
-        mouseEventTapRunLoopSource = source
-        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
-        CGEvent.tapEnable(tap: tap, enable: true)
+            guard let tap = CGEvent.tapCreate(
+                tap: .cgSessionEventTap,
+                place: .headInsertEventTap,
+                options: .defaultTap,
+                eventsOfInterest: eventMask,
+                callback: { _, _, event, _ in
+                    // Suppress the event by returning nil
+                    return nil
+                },
+                userInfo: nil
+            ) else { return }
+
+            self.mouseEventTap = tap
+            let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+            self.mouseEventTapRunLoopSource = source
+            CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
+            CGEvent.tapEnable(tap: tap, enable: true)
+        }
     }
 
-    private func stopSuppressingMouse() {
+    private func stopSuppressingMouse(for reason: MouseSuppressionReason? = nil) {
+        if let reason = reason, mouseSuppressionReason != reason {
+            return
+        }
+        mouseSuppressionReason = .none
         guard circleDrawingActive else { return }
         circleDrawingActive = false
-        if let tap = mouseEventTap {
-            CGEvent.tapEnable(tap: tap, enable: false)
-            if let source = mouseEventTapRunLoopSource {
-                CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes)
+
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            if let tap = self.mouseEventTap {
+                CGEvent.tapEnable(tap: tap, enable: false)
+                if let source = self.mouseEventTapRunLoopSource {
+                    CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes)
+                }
+                self.mouseEventTap = nil
+                self.mouseEventTapRunLoopSource = nil
             }
-            mouseEventTap = nil
-            mouseEventTapRunLoopSource = nil
         }
     }
 
@@ -727,8 +775,6 @@ class TrackpadMonitor {
         trianglePoints.append((x: x, y: y))
         // Don't check triangle if circle already fired this session, or triangle already fired
         guard !triangleFired, circleFireCount == 0, trianglePoints.count >= 20 else { return }
-        // Start suppressing mouse once we have enough points for a potential drawing
-        if trianglePoints.count == 20 { startSuppressingMouse() }
         if isTriangle() {
             triangleFired = true
             resetCircleState()  // suppress circle since triangle won
@@ -853,15 +899,16 @@ class TrackpadMonitor {
         let side: EdgeSide = onLeft ? .left : .right
 
         guard let lastY = edgeSlideLastY, edgeSlideEdge == side else {
-            // Start tracking
+            // Anchor point established on the edge
             edgeSlideLastY = y
             edgeSlideEdge = side
-            startSuppressingMouse()
             return
         }
 
         let deltaY = y - lastY
         if abs(deltaY) >= edgeSlideStep {
+            // Actively sliding along the edge — suppress mouse while sliding
+            startSuppressingMouse(for: .edgeSlide)
             // Fire once per step, then advance the anchor
             let gesture: TrackpadGesture
             switch (side, deltaY > 0) {
@@ -880,6 +927,7 @@ class TrackpadMonitor {
     private func resetEdgeDragState() {
         edgeSlideLastY = nil
         edgeSlideEdge = nil
+        stopSuppressingMouse(for: .edgeSlide)
     }
 
     // MARK: - Position click detection
@@ -990,6 +1038,7 @@ class TrackpadMonitor {
             self?.handlePressDragEnd()
             self?.trackpadIsPressed = false
             self?.positionClickFired = false
+            TrackpadMonitor.pendingSuppressClick = false
             self?.resetCircleState()
             self?.resetTriangleState()
             self?.resetEdgeDragState()
@@ -1359,12 +1408,17 @@ class TrackpadMonitor {
 
     func unregisterAll() {
         tearDownClickSuppressionTap()
+        stopSuppressingMouse()
         for monitor in monitors {
             NSEvent.removeMonitor(monitor)
         }
         monitors.removeAll()
         registeredTriggers.removeAll()
+        hasCircleTriggers = false
+        hasTriangleTriggers = false
+        hasEdgeSlideTriggers = false
         trackpadIsPressed = false
+        TrackpadMonitor.pendingSuppressClick = false
 
         if multitouchActive {
             if let unregister = _MTUnregisterContactFrameCallback,
