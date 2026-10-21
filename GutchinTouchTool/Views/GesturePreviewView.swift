@@ -309,6 +309,7 @@ struct DoubleTapAnimation: View {
     let animating: Bool
     @Environment(\.themeColor) private var themeColor
     @State private var phase: Int = 0
+    @State private var isVisible = false
 
     var body: some View {
         let spacing: CGFloat = 14
@@ -329,15 +330,25 @@ struct DoubleTapAnimation: View {
                 .offset(y: 28)
                 .opacity(phase == 2 ? 1 : 0)
         }
-        .onAppear { runDoubleTap() }
-        .onChange(of: animating) { _ in runDoubleTap() }
+        .onAppear {
+            isVisible = true
+            runDoubleTap()
+        }
+        .onDisappear {
+            isVisible = false
+        }
+        .onChange(of: animating) { _ in
+            if isVisible { runDoubleTap() }
+        }
     }
 
     private func runDoubleTap() {
+        guard isVisible else { return }
         phase = 0
         func tap(at time: Double, p: Int) {
             DispatchQueue.main.asyncAfter(deadline: .now() + time) {
-                withAnimation(.easeInOut(duration: 0.15)) { phase = p }
+                guard self.isVisible else { return }
+                withAnimation(.easeInOut(duration: 0.15)) { self.phase = p }
             }
         }
         tap(at: 0.3, p: 1)
@@ -345,7 +356,10 @@ struct DoubleTapAnimation: View {
         tap(at: 0.7, p: 2)
         tap(at: 0.9, p: 0)
         // Loop
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { runDoubleTap() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [self] in
+            guard self.isVisible else { return }
+            self.runDoubleTap()
+        }
     }
 }
 
@@ -400,6 +414,7 @@ struct TipTapAnimation: View {
     let direction: TipTapDir
     let animating: Bool
     @State private var tapping = false
+    @State private var isVisible = false
 
     var body: some View {
         ZStack {
@@ -429,15 +444,26 @@ struct TipTapAnimation: View {
                     .offset(y: tapping ? 0 : -12)
             }
         }
-        .onAppear { runTipTap() }
+        .onAppear {
+            isVisible = true
+            runTipTap()
+        }
+        .onDisappear {
+            isVisible = false
+        }
     }
 
     private func runTipTap() {
+        guard isVisible else { return }
         withAnimation(.easeOut(duration: 0.2)) { tapping = true }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-            withAnimation(.easeIn(duration: 0.2)) { tapping = false }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [self] in
+            guard self.isVisible else { return }
+            withAnimation(.easeIn(duration: 0.2)) { self.tapping = false }
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { runTipTap() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [self] in
+            guard self.isVisible else { return }
+            self.runTipTap()
+        }
     }
 }
 
@@ -644,6 +670,7 @@ struct PositionClickAnimation: View {
     let animating: Bool
     @Environment(\.themeColor) private var themeColor
     @State private var pressing = false
+    @State private var isVisible = false
 
     var body: some View {
         ZStack {
@@ -664,15 +691,26 @@ struct PositionClickAnimation: View {
                 .frame(width: pressing ? 36 : 16, height: pressing ? 36 : 16)
                 .offset(x: dotX, y: dotY)
         }
-        .onAppear { runPress() }
+        .onAppear {
+            isVisible = true
+            runPress()
+        }
+        .onDisappear {
+            isVisible = false
+        }
     }
 
     private func runPress() {
+        guard isVisible else { return }
         withAnimation(.easeOut(duration: 0.25)) { pressing = true }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            withAnimation(.easeIn(duration: 0.25)) { pressing = false }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [self] in
+            guard self.isVisible else { return }
+            withAnimation(.easeIn(duration: 0.25)) { self.pressing = false }
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { runPress() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [self] in
+            guard self.isVisible else { return }
+            self.runPress()
+        }
     }
 
     private var dotX: CGFloat {

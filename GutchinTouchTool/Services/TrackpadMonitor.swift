@@ -174,13 +174,63 @@ class TrackpadMonitor {
     }
     private var mouseSuppressionReason: MouseSuppressionReason = .none
 
-    // Active gesture flags based on registered triggers
+    // Active gesture flags based on registered triggers with actions
+    private var hasCircleClockwise = false
+    private var hasCircleCounterClockwise = false
     private var hasCircleTriggers = false
     private var hasTriangleTriggers = false
     private var hasEdgeSlideTriggers = false
+    private var has1FingerDrawGestures = false
+
+    private var hasTwoFingerSwipe = false
+    private var hasThreeFingerSwipe = false
+    private var hasFourFingerSwipe = false
+    private var hasSwipeTriggers = false
+
+    private var hasPinchTriggers = false
+    private var hasRotateTriggers = false
+    private var hasPressDragTriggers = false
+
+    private var hasTipTapLeft = false
+    private var hasTipTapRight = false
+    private var hasTipTapTriggers = false
+    private var hasTipTapMiddle = false
+
+    private var hasTwoFingerTap = false
+    private var hasTwoFingerDoubleTap = false
+    private var hasThreeFingerTap = false
+    private var hasFourFingerTap = false
+    private var hasFiveFingerTap = false
+    private var hasTapTriggers = false
+
+    private var hasPositionClickTriggers = false
+    private var hasTwoFingerClick = false
+    private var hasThreeFingerClick = false
+    private var hasClickTriggers = false
+
+    private var circleSumX: Float = 0
+    private var circleSumY: Float = 0
+    private var lastVisualizerUpdateTime: Double = 0
+    private let visualizerMinInterval: Double = 1.0 / 60.0
 
     var isMouseSuppressedForTest: Bool {
         circleDrawingActive
+    }
+
+    var isMultitouchActiveForTest: Bool {
+        multitouchActive
+    }
+
+    private var visualizerObserver: Any?
+
+    init() {
+        visualizerObserver = NotificationCenter.default.addObserver(
+            forName: .visualizerStateChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.updateMultitouchMonitoringState()
+        }
     }
 
     // Triangle gesture detection (1-finger pressing down and drawing)
@@ -206,7 +256,9 @@ class TrackpadMonitor {
         unregisterAll()
 
         let trackpadTriggers = triggers.filter {
-            if case .trackpadGesture = $0.input { return $0.isEnabled }
+            if case .trackpadGesture = $0.input {
+                return $0.isEnabled && (!$0.actions.isEmpty || $0.suppressClick)
+            }
             return false
         }
 
@@ -216,27 +268,121 @@ class TrackpadMonitor {
             }
         }
 
-        guard !registeredTriggers.isEmpty else { return }
+        guard !registeredTriggers.isEmpty else {
+            NSLog("[TrackpadMonitor] No active triggers with actions configured")
+            return
+        }
 
-        hasCircleTriggers = registeredTriggers.contains {
-            $0.gesture == .circleClockwise || $0.gesture == .circleCounterClockwise
-        }
-        hasTriangleTriggers = registeredTriggers.contains {
-            $0.gesture == .drawTriangle
-        }
-        hasEdgeSlideTriggers = registeredTriggers.contains {
-            $0.gesture == .leftEdgeSlideUp || $0.gesture == .leftEdgeSlideDown ||
-            $0.gesture == .rightEdgeSlideUp || $0.gesture == .rightEdgeSlideDown
-        }
+        let configuredGestures = Set(registeredTriggers.map { $0.gesture })
+
+        hasCircleClockwise = configuredGestures.contains(.circleClockwise)
+        hasCircleCounterClockwise = configuredGestures.contains(.circleCounterClockwise)
+        hasCircleTriggers = hasCircleClockwise || hasCircleCounterClockwise
+
+        hasTriangleTriggers = configuredGestures.contains(.drawTriangle)
+
+        hasEdgeSlideTriggers = configuredGestures.contains(.leftEdgeSlideUp) ||
+                               configuredGestures.contains(.leftEdgeSlideDown) ||
+                               configuredGestures.contains(.rightEdgeSlideUp) ||
+                               configuredGestures.contains(.rightEdgeSlideDown)
+
+        has1FingerDrawGestures = hasCircleTriggers || hasTriangleTriggers || hasEdgeSlideTriggers
+
+        hasTwoFingerSwipe = configuredGestures.contains(.twoFingerSwipeUp) ||
+                            configuredGestures.contains(.twoFingerSwipeDown) ||
+                            configuredGestures.contains(.twoFingerSwipeLeft) ||
+                            configuredGestures.contains(.twoFingerSwipeRight)
+
+        hasThreeFingerSwipe = configuredGestures.contains(.threeFingerSwipeUp) ||
+                              configuredGestures.contains(.threeFingerSwipeDown) ||
+                              configuredGestures.contains(.threeFingerSwipeLeft) ||
+                              configuredGestures.contains(.threeFingerSwipeRight)
+
+        hasFourFingerSwipe = configuredGestures.contains(.fourFingerSwipeUp) ||
+                             configuredGestures.contains(.fourFingerSwipeDown) ||
+                             configuredGestures.contains(.fourFingerSwipeLeft) ||
+                             configuredGestures.contains(.fourFingerSwipeRight)
+
+        hasSwipeTriggers = hasTwoFingerSwipe || hasThreeFingerSwipe || hasFourFingerSwipe
+
+        hasPinchTriggers = configuredGestures.contains(.twoFingerPinchIn) || configuredGestures.contains(.twoFingerPinchOut)
+        hasRotateTriggers = configuredGestures.contains(.twoFingerRotateLeft) || configuredGestures.contains(.twoFingerRotateRight)
+        hasPressDragTriggers = configuredGestures.contains(.twoFingerPressDragLeft) || configuredGestures.contains(.twoFingerPressDragRight)
+
+        hasTipTapLeft = configuredGestures.contains(.tipTapLeft)
+        hasTipTapRight = configuredGestures.contains(.tipTapRight)
+        hasTipTapTriggers = hasTipTapLeft || hasTipTapRight
+        hasTipTapMiddle = configuredGestures.contains(.tipTapMiddle)
+
+        hasTwoFingerTap = configuredGestures.contains(.twoFingerTap)
+        hasTwoFingerDoubleTap = configuredGestures.contains(.twoFingerDoubleTap)
+        hasThreeFingerTap = configuredGestures.contains(.threeFingerTap)
+        hasFourFingerTap = configuredGestures.contains(.fourFingerTap)
+        hasFiveFingerTap = configuredGestures.contains(.fiveFingerTap)
+        hasTapTriggers = hasTwoFingerTap || hasTwoFingerDoubleTap || hasThreeFingerTap || hasFourFingerTap || hasFiveFingerTap
+
+        hasPositionClickTriggers = configuredGestures.contains(.cornerClickTopLeft) ||
+                                   configuredGestures.contains(.cornerClickTopRight) ||
+                                   configuredGestures.contains(.cornerClickBottomLeft) ||
+                                   configuredGestures.contains(.cornerClickBottomRight) ||
+                                   configuredGestures.contains(.middleClickTop) ||
+                                   configuredGestures.contains(.middleClickBottom)
+
+        hasTwoFingerClick = configuredGestures.contains(.twoFingerClick)
+        hasThreeFingerClick = configuredGestures.contains(.threeFingerClick)
+        hasClickTriggers = hasPositionClickTriggers || hasTwoFingerClick || hasThreeFingerClick
 
         setupNSEventMonitors()
-        setupMultitouchMonitoring()
+        updateMultitouchMonitoringState()
         setupClickSuppressionTap()
 
-        NSLog("[TrackpadMonitor] Registered %d gesture triggers", registeredTriggers.count)
+        NSLog("[TrackpadMonitor] Registered %d gesture triggers with actions", registeredTriggers.count)
     }
 
     // MARK: - Multitouch monitoring via private framework
+
+    private var needsMultitouch: Bool {
+        LiveTouchState.isVisualizerActive ||
+        hasTipTapTriggers ||
+        hasTipTapMiddle ||
+        hasTapTriggers ||
+        has1FingerDrawGestures ||
+        hasPositionClickTriggers ||
+        hasTwoFingerClick ||
+        hasThreeFingerClick ||
+        hasPressDragTriggers ||
+        hasThreeFingerSwipe ||
+        hasFourFingerSwipe
+    }
+
+    func updateMultitouchMonitoringState() {
+        if needsMultitouch {
+            if !multitouchActive {
+                setupMultitouchMonitoring()
+            }
+        } else {
+            if multitouchActive {
+                stopMultitouchMonitoring()
+            }
+        }
+    }
+
+    private func stopMultitouchMonitoring() {
+        guard multitouchActive else { return }
+        if let unregister = _MTUnregisterContactFrameCallback,
+           let stop = _MTDeviceStop {
+            for device in devices {
+                unregister(device, touchCallback)
+                stop(device)
+            }
+        }
+        devices.removeAll()
+        multitouchActive = false
+        if sharedTrackpadMonitor === self {
+            sharedTrackpadMonitor = nil
+        }
+        NSLog("[TrackpadMonitor] Multitouch monitoring stopped")
+    }
 
     private func setupMultitouchMonitoring() {
         guard let createList = _MTDeviceCreateList,
@@ -312,54 +458,88 @@ class TrackpadMonitor {
 
     func handleMultitouchFrame(rawTouches: UnsafeMutableRawPointer?, numTouches: Int, timestamp: Double) {
         let activeFingersCount = numTouches
+        let previousFingers = currentFingers
 
-        // Collect finger data from raw touch buffer using detected stride
-        var fingerXPositions: [Float] = []
-        var liveTouchPoints: [TouchPoint] = []
-        if let raw = rawTouches, activeFingersCount > 0 {
-            // Only detect stride when we have 2+ fingers (need two structs to measure)
-            if touchStride == 0 && activeFingersCount >= 2 {
-                touchStride = detectTouchStride(raw: raw, numTouches: activeFingersCount)
-            }
-            let stride = touchStride > 0 ? touchStride : MemoryLayout<MTTouch>.stride
+        // Fast path: if no touches now and no touches previously, and no pending TipTap, do nothing!
+        if activeFingersCount == 0 && previousFingers == 0 && !tipTapPending {
+            return
+        }
 
-            for i in 0..<activeFingersCount {
-                let t = readTouch(from: raw, at: i * stride)
-                fingerXPositions.append(t.x)
-                // Only include in live view if position is valid (not a ghost at 0,0)
-                if t.x > 0.001 || t.y > 0.001 {
-                    liveTouchPoints.append(TouchPoint(
-                        id: Int(t.fingerID),
-                        x: t.x,
-                        y: t.y,
-                        size: t.majorAxis
-                    ))
-                }
-            }
+        let visualizerActive = LiveTouchState.isVisualizerActive
 
+        // 1. Single finger extraction (only when needed by registered 1-finger recognizers or visualizer)
+        var singleFingerX: Float?
+        var singleFingerY: Float?
+        let needsSingleFinger = activeFingersCount == 1 && rawTouches != nil &&
+            (hasTipTapTriggers || hasPositionClickTriggers || has1FingerDrawGestures || visualizerActive)
 
-            // Track single finger position for zone click detection
-            if activeFingersCount == 1 {
-                let t0 = readTouch(from: raw, at: 0)
-                lastSingleFingerPos = (x: t0.x, y: t0.y)
-            } else {
+        if needsSingleFinger, let raw = rawTouches {
+            singleFingerX = raw.load(fromByteOffset: Self.offsetNormX, as: Float.self)
+            singleFingerY = raw.load(fromByteOffset: Self.offsetNormY, as: Float.self)
+        }
+
+        // Position click tracking
+        if hasPositionClickTriggers {
+            if let sx = singleFingerX, let sy = singleFingerY {
+                lastSingleFingerPos = (x: sx, y: sy)
+            } else if activeFingersCount != 1 {
                 lastSingleFingerPos = nil
             }
         }
-        // Update visual press state from real-time button query every frame
-        // This is authoritative — avoids stale state from mismatched down/up events
-        let anyButtonDown = NSEvent.pressedMouseButtons != 0
-        if !anyButtonDown {
+
+        // Visualizer points extraction (ONLY when visualizer is actually on screen!)
+        if visualizerActive {
+            var liveTouchPoints: [TouchPoint] = []
+            if let raw = rawTouches, activeFingersCount > 0 {
+                if touchStride == 0 && activeFingersCount >= 2 {
+                    touchStride = detectTouchStride(raw: raw, numTouches: activeFingersCount)
+                }
+                let stride = touchStride > 0 ? touchStride : MemoryLayout<MTTouch>.stride
+
+                liveTouchPoints.reserveCapacity(activeFingersCount)
+                for i in 0..<activeFingersCount {
+                    let byteOffset = i * stride
+                    let px = raw.load(fromByteOffset: byteOffset + Self.offsetNormX, as: Float.self)
+                    let py = raw.load(fromByteOffset: byteOffset + Self.offsetNormY, as: Float.self)
+                    if px > 0.001 || py > 0.001 {
+                        let fid = raw.load(fromByteOffset: byteOffset + Self.offsetFingerID, as: Int32.self)
+                        let maj = raw.load(fromByteOffset: byteOffset + Self.offsetMajorAxis, as: Float.self)
+                        liveTouchPoints.append(TouchPoint(
+                            id: Int(fid),
+                            x: px,
+                            y: py,
+                            size: maj
+                        ))
+                    }
+                }
+            }
+
+            let anyButtonDown = NSEvent.pressedMouseButtons != 0
+            if !anyButtonDown {
+                TrackpadMonitor.pendingSuppressClick = false
+            }
+            let shouldUpdate: Bool
+            if activeFingersCount == 0 {
+                shouldUpdate = true
+                lastVisualizerUpdateTime = timestamp
+            } else if (timestamp - lastVisualizerUpdateTime) >= visualizerMinInterval {
+                shouldUpdate = true
+                lastVisualizerUpdateTime = timestamp
+            } else {
+                shouldUpdate = false
+            }
+
+            if shouldUpdate {
+                LiveTouchState.shared.setPressed(anyButtonDown && !liveTouchPoints.isEmpty)
+                LiveTouchState.shared.update(liveTouchPoints)
+            }
+        } else if previousFingers > 0 && activeFingersCount == 0 {
             TrackpadMonitor.pendingSuppressClick = false
+            LiveTouchState.shared.setPressed(false)
+            LiveTouchState.shared.update([])
         }
-        LiveTouchState.shared.setPressed(anyButtonDown && !liveTouchPoints.isEmpty)
-        LiveTouchState.shared.update(liveTouchPoints)
 
-        let previousFingers = currentFingers
-
-
-        // New touch session (all fingers were off)
-        // BUT: if a TipTap is pending (2→0→1 sequence), don't reset!
+        // Touch session tracking
         if activeFingersCount > 0 && previousFingers == 0 && !tipTapPending {
             touchBegan = Date()
             peakFingers = activeFingersCount
@@ -376,25 +556,44 @@ class TrackpadMonitor {
 
         currentFingers = activeFingersCount
 
-        // --- TipTap detection ---
-        // TipTap = one finger PRESSES (clicks), another taps. Sequence: 1→2→1 (or 1→2→0→1)
-        // The resting finger must be pressing the trackpad down (force click)
+        // --- TipTap Left/Right detection ---
+        if hasTipTapTriggers {
+            handleTipTapFrame(activeFingersCount: activeFingersCount, previousFingers: previousFingers, singleFingerX: singleFingerX)
+        }
 
+        // --- TipTap Middle detection ---
+        if hasTipTapMiddle {
+            handleTipTapMiddleFrame(activeFingersCount: activeFingersCount, previousFingers: previousFingers)
+        }
+
+        // --- Regular tap detection ---
+        if hasTapTriggers && activeFingersCount == 0 && previousFingers > 0 && touchBegan != nil {
+            handleTapRelease(previousFingers: previousFingers)
+        } else if activeFingersCount == 0 && previousFingers > 0 {
+            touchBegan = nil
+            peakFingers = 0
+        }
+
+        // --- Drawing gesture detection ---
+        if has1FingerDrawGestures {
+            handleDrawingGesturesFrame(activeFingersCount: activeFingersCount, singleFingerX: singleFingerX, singleFingerY: singleFingerY)
+        }
+    }
+
+    private func handleTipTapFrame(activeFingersCount: Int, previousFingers: Int, singleFingerX: Float?) {
         // Track 1-finger resting phase
         if activeFingersCount == 1 {
             if oneFingerStartTime == nil {
                 oneFingerStartTime = Date()
             }
-            // Continuously update rest X position while 1 finger is down
-            if fingerXPositions.count == 1 && fingerXPositions[0] > 0.01 {
-                oneFingerRestX = fingerXPositions[0]
+            if let sx = singleFingerX, sx > 0.01 {
+                oneFingerRestX = sx
             }
         }
 
         // 1→2 transition: second finger just landed
         if activeFingersCount == 2 && previousFingers == 1 {
             twoFingerStartTime = Date()
-            // Was the single finger resting long enough AND pressing the trackpad?
             let isPressed = NSEvent.pressedMouseButtons & 0x1 != 0
             if let restStart = oneFingerStartTime, isPressed {
                 let restDuration = Date().timeIntervalSince(restStart)
@@ -402,7 +601,6 @@ class TrackpadMonitor {
                 if hadOneFingerRest {
                     tipTapPending = true
                     tipTapPendingTime = Date()
-                    // TipTap armed (finger is pressed)
                 }
             } else {
                 hadOneFingerRest = false
@@ -417,18 +615,12 @@ class TrackpadMonitor {
         }
 
         // 2→1 transition: clean TipTap
-        // Note: don't check gestureConsumed here — TipTap uses its own tipTapPending guard
-        // gestureConsumed stays true from initial touch and never resets since finger stays down
         if activeFingersCount == 1 && previousFingers == 2 && tipTapPending {
-            // Check if the remaining finger is the original rester (same side of trackpad).
-            // If it switched sides, this was the user swapping resting fingers, not a tap.
-            if let restX = oneFingerRestX, fingerXPositions.count == 1 {
-                let remainingX = fingerXPositions[0]
+            if let restX = oneFingerRestX, let remainingX = singleFingerX {
                 let sameSide = (restX < 0.50 && remainingX < 0.50) || (restX >= 0.50 && remainingX >= 0.50)
                 if sameSide {
                     checkAndFireTipTap()
                 } else {
-                    // Resting finger switched sides — this is a direction change, not a tap
                     tipTapPending = false
                     oneFingerRestX = remainingX
                     oneFingerStartTime = Date()
@@ -438,37 +630,32 @@ class TrackpadMonitor {
             }
         }
 
-        // 2→0 transition: tapper might have lifted — keep tipTapPending alive briefly
-        // (the rester might reappear as 0→1 on the next frame)
-
         // 0→1 after a pending TipTap (2→0→1 sequence): fire it!
         if activeFingersCount == 1 && previousFingers == 0 && tipTapPending {
             checkAndFireTipTap()
         }
 
-        // Timeout: if tipTapPending has been waiting too long, clear it
+        // Timeout
         if tipTapPending, let pt = tipTapPendingTime, Date().timeIntervalSince(pt) > tipTapMaxTapDuration {
-            // TipTap expired
             tipTapPending = false
         }
 
-        // Reset TipTap Left/Right state if we go above 2 fingers
+        // Reset if we go above 2 fingers
         if activeFingersCount > 2 {
             hadOneFingerRest = false
             tipTapPending = false
             oneFingerRestX = nil
             oneFingerStartTime = nil
         }
+    }
 
-        // --- TipTap Middle detection (2→3→2) ---
-        // Track 2-finger resting phase
+    private func handleTipTapMiddleFrame(activeFingersCount: Int, previousFingers: Int) {
         if activeFingersCount == 2 {
             if twoFingerRestTime == nil {
                 twoFingerRestTime = Date()
             }
         }
 
-        // 2→3 transition: third finger tapped
         if activeFingersCount == 3 && previousFingers == 2 {
             threeFingerStartTime = Date()
             if let restStart = twoFingerRestTime, Date().timeIntervalSince(restStart) >= tipTapMinRestTime {
@@ -476,7 +663,6 @@ class TrackpadMonitor {
             }
         }
 
-        // 3→2 transition: tapper lifted — TipTap Middle!
         if activeFingersCount == 2 && previousFingers == 3 && tipTapMiddlePending {
             if let threeStart = threeFingerStartTime, Date().timeIntervalSince(threeStart) < tipTapMaxTapDuration {
                 tipTapMiddlePending = false
@@ -490,7 +676,6 @@ class TrackpadMonitor {
             }
         }
 
-        // Reset TipTap Middle state
         if activeFingersCount == 0 || activeFingersCount == 1 {
             twoFingerRestTime = nil
             tipTapMiddlePending = false
@@ -499,30 +684,37 @@ class TrackpadMonitor {
         if activeFingersCount > 3 {
             tipTapMiddlePending = false
         }
+    }
 
-        // --- Regular tap detection (all fingers lift together) ---
-        if activeFingersCount == 0 && previousFingers > 0 && touchBegan != nil {
-            let elapsed = Date().timeIntervalSince(touchBegan!)
+    private func handleTapRelease(previousFingers: Int) {
+        guard let began = touchBegan else {
+            peakFingers = 0
+            return
+        }
+        let elapsed = Date().timeIntervalSince(began)
+        touchBegan = nil
+        let peak = peakFingers
+        peakFingers = 0
 
-            if elapsed < tapTimeout && !gestureConsumed {
-                if peakFingers == 2 {
-                    // Check for double-tap
-                    let now = Date()
-                    if let lastTap = lastTwoFingerTapTime, now.timeIntervalSince(lastTap) < doubleTapWindow {
-                        // Double tap detected — cancel the pending single tap and fire double
-                        doubleTapTimer?.cancel()
-                        doubleTapTimer = nil
-                        lastTwoFingerTapTime = nil
-                        NSLog("[TrackpadMonitor] Detected 2-finger double tap")
-                        DispatchQueue.main.async { [self] in
-                            GestureLog.shared.logFromAnyThread("Detected 2-finger double tap", level: .detect)
-                            fireGesture(.twoFingerDoubleTap)
-                        }
-                    } else {
-                        // First tap — delay firing single tap to wait for possible second tap
-                        lastTwoFingerTapTime = now
+        guard elapsed < tapTimeout && !gestureConsumed else { return }
+
+        if peak == 2 {
+            if hasTwoFingerDoubleTap {
+                let now = Date()
+                if let lastTap = lastTwoFingerTapTime, now.timeIntervalSince(lastTap) < doubleTapWindow {
+                    doubleTapTimer?.cancel()
+                    doubleTapTimer = nil
+                    lastTwoFingerTapTime = nil
+                    NSLog("[TrackpadMonitor] Detected 2-finger double tap")
+                    DispatchQueue.main.async { [self] in
+                        GestureLog.shared.logFromAnyThread("Detected 2-finger double tap", level: .detect)
+                        fireGesture(.twoFingerDoubleTap)
+                    }
+                } else {
+                    lastTwoFingerTapTime = now
+                    if hasTwoFingerTap {
                         let timer = DispatchWorkItem { [weak self] in
-                            guard let self else { return }
+                            guard let self = self else { return }
                             self.lastTwoFingerTapTime = nil
                             NSLog("[TrackpadMonitor] Detected 2-finger tap (duration: %.2fs)", elapsed)
                             DispatchQueue.main.async {
@@ -533,52 +725,47 @@ class TrackpadMonitor {
                         doubleTapTimer = timer
                         DispatchQueue.global().asyncAfter(deadline: .now() + doubleTapWindow, execute: timer)
                     }
-                } else {
-                    let tapGesture: TrackpadGesture?
-                    switch peakFingers {
-                    case 3: tapGesture = .threeFingerTap
-                    case 4: tapGesture = .fourFingerTap
-                    case 5: tapGesture = .fiveFingerTap
-                    default: tapGesture = nil
-                    }
-                    if let gesture = tapGesture {
-                        NSLog("[TrackpadMonitor] Detected %d-finger tap (duration: %.2fs)", peakFingers, elapsed)
-                        let fingers = peakFingers
-                        let dur = elapsed
-                        DispatchQueue.main.async { [self] in
-                            GestureLog.shared.logFromAnyThread("Detected \(fingers)-finger tap (\(String(format: "%.2fs", dur)))", level: .detect)
-                            fireGesture(gesture)
-                        }
-                    }
+                }
+            } else if hasTwoFingerTap {
+                NSLog("[TrackpadMonitor] Detected 2-finger tap (duration: %.2fs)", elapsed)
+                DispatchQueue.main.async { [self] in
+                    GestureLog.shared.logFromAnyThread("Detected 2-finger tap (\(String(format: "%.2fs", elapsed)))", level: .detect)
+                    fireGesture(.twoFingerTap)
                 }
             }
-
-            touchBegan = nil
-            peakFingers = 0
+        } else if peak == 3 && hasThreeFingerTap {
+            NSLog("[TrackpadMonitor] Detected 3-finger tap (duration: %.2fs)", elapsed)
+            DispatchQueue.main.async { [self] in
+                GestureLog.shared.logFromAnyThread("Detected 3-finger tap (\(String(format: "%.2fs", elapsed)))", level: .detect)
+                fireGesture(.threeFingerTap)
+            }
+        } else if peak == 4 && hasFourFingerTap {
+            NSLog("[TrackpadMonitor] Detected 4-finger tap (duration: %.2fs)", elapsed)
+            DispatchQueue.main.async { [self] in
+                GestureLog.shared.logFromAnyThread("Detected 4-finger tap (\(String(format: "%.2fs", elapsed)))", level: .detect)
+                fireGesture(.fourFingerTap)
+            }
+        } else if peak == 5 && hasFiveFingerTap {
+            NSLog("[TrackpadMonitor] Detected 5-finger tap (duration: %.2fs)", elapsed)
+            DispatchQueue.main.async { [self] in
+                GestureLog.shared.logFromAnyThread("Detected 5-finger tap (\(String(format: "%.2fs", elapsed)))", level: .detect)
+                fireGesture(.fiveFingerTap)
+            }
         }
+    }
 
-        // --- Drawing gesture detection (1-finger pressing down and drawing) ---
-        let has1FingerGestures = hasCircleTriggers || hasTriangleTriggers || hasEdgeSlideTriggers
-        if has1FingerGestures, activeFingersCount == 1, fingerXPositions.count == 1,
-           let raw = rawTouches {
-            let t0 = readTouch(from: raw, at: 0)
-            let x = t0.x
-            let y = t0.y
-            // Only track when trackpad is clicked down and position is valid
-            // Use NSEvent.pressedMouseButtons (real-time query) instead of stored
-            // trackpadIsPressed to avoid race conditions between threads
+    private func handleDrawingGesturesFrame(activeFingersCount: Int, singleFingerX: Float?, singleFingerY: Float?) {
+        if activeFingersCount == 1, let x = singleFingerX, let y = singleFingerY {
             let isClickedNow = NSEvent.pressedMouseButtons & 0x1 != 0
             if x > 0.01 && y > 0.01 && isClickedNow {
                 if hasCircleTriggers { trackCirclePoint(x: x, y: y) }
                 if hasTriangleTriggers { trackTrianglePoint(x: x, y: y) }
                 if hasEdgeSlideTriggers { trackEdgeDrag(x: x, y: y) }
-            } else {
-                resetCircleState()
-                resetTriangleState()
-                resetEdgeDragState()
-                stopSuppressingMouse()
+                return
             }
-        } else {
+        }
+
+        if !circlePoints.isEmpty || !trianglePoints.isEmpty || edgeSlideLastY != nil || circleDrawingActive {
             resetCircleState()
             resetTriangleState()
             resetEdgeDragState()
@@ -590,11 +777,13 @@ class TrackpadMonitor {
 
     private func trackCirclePoint(x: Float, y: Float) {
         circlePoints.append((x: x, y: y))
+        circleSumX += x
+        circleSumY += y
 
-        // Update running centroid
+        // Update running centroid in O(1)
         let n = Float(circlePoints.count)
-        circleCenterX = circlePoints.reduce(0) { $0 + $1.x } / n
-        circleCenterY = circlePoints.reduce(0) { $0 + $1.y } / n
+        circleCenterX = circleSumX / n
+        circleCenterY = circleSumY / n
 
         // Calculate angle from centroid to current point
         let dx = x - circleCenterX
@@ -622,6 +811,8 @@ class TrackpadMonitor {
                 // Not circular — trim old points to keep tracking fresh
                 if circlePoints.count > 40 {
                     circlePoints.removeFirst(circlePoints.count - 30)
+                    circleSumX = circlePoints.reduce(0) { $0 + $1.x }
+                    circleSumY = circlePoints.reduce(0) { $0 + $1.y }
                     circleCumulativeAngle = 0
                     circleLastFiredAngle = 0
                     circleFireCount = 0
@@ -659,14 +850,18 @@ class TrackpadMonitor {
                 resetTriangleState()  // suppress triangle since circle won
 
                 if circleCumulativeAngle > 0 {
-                    DispatchQueue.main.async { [self] in
-                        GestureLog.shared.logFromAnyThread("Circle: Counter-Clockwise (#\(circleFireCount))", level: .detect)
-                        fireGesture(.circleCounterClockwise)
+                    if hasCircleCounterClockwise {
+                        DispatchQueue.main.async { [self] in
+                            GestureLog.shared.logFromAnyThread("Circle: Counter-Clockwise (#\(circleFireCount))", level: .detect)
+                            fireGesture(.circleCounterClockwise)
+                        }
                     }
                 } else {
-                    DispatchQueue.main.async { [self] in
-                        GestureLog.shared.logFromAnyThread("Circle: Clockwise (#\(circleFireCount))", level: .detect)
-                        fireGesture(.circleClockwise)
+                    if hasCircleClockwise {
+                        DispatchQueue.main.async { [self] in
+                            GestureLog.shared.logFromAnyThread("Circle: Clockwise (#\(circleFireCount))", level: .detect)
+                            fireGesture(.circleClockwise)
+                        }
                     }
                 }
             }
@@ -677,32 +872,32 @@ class TrackpadMonitor {
     private func isPathCircular() -> Bool {
         guard circlePoints.count >= circleMinPoints else { return false }
 
-        // Calculate distances from each point to the centroid
-        let distances = circlePoints.map { p -> Float in
+        var sumDist: Float = 0
+        var sumDistSq: Float = 0
+        let count = Float(circlePoints.count)
+
+        for p in circlePoints {
             let dx = p.x - circleCenterX
             let dy = p.y - circleCenterY
-            return sqrt(dx * dx + dy * dy)
+            let d = sqrt(dx * dx + dy * dy)
+            sumDist += d
+            sumDistSq += d * d
         }
 
-        let meanDist = distances.reduce(0, +) / Float(distances.count)
-
-        // Path must have a minimum radius (not just jitter in place)
-        // but also a maximum — only small coin-sized circles should trigger
+        let meanDist = sumDist / count
         guard meanDist > 0.02 && meanDist < 0.09 else { return false }
 
-        // Check coefficient of variation (std dev / mean)
-        // A circle has low variation, a line has high variation
-        let variance = distances.map { ($0 - meanDist) * ($0 - meanDist) }.reduce(0, +) / Float(distances.count)
+        let variance = max(0, (sumDistSq / count) - (meanDist * meanDist))
         let stdDev = sqrt(variance)
         let cv = stdDev / meanDist
 
-        // A perfect circle has cv ≈ 0. Allow up to 0.45 for imperfect human circles.
-        // Lines typically have cv > 0.5
         return cv < 0.45
     }
 
     private func resetCircleState() {
         circlePoints.removeAll()
+        circleSumX = 0
+        circleSumY = 0
         circleCumulativeAngle = 0
         circleLastAngle = nil
         circleCenterX = 0
@@ -918,8 +1113,10 @@ class TrackpadMonitor {
             case (.right, false): gesture = .rightEdgeSlideDown
             }
             edgeSlideLastY = y
-            DispatchQueue.main.async { [self] in
-                fireGesture(gesture)
+            if registeredTriggers.contains(where: { $0.gesture == gesture }) {
+                DispatchQueue.main.async { [self] in
+                    fireGesture(gesture)
+                }
             }
         }
     }
@@ -933,7 +1130,7 @@ class TrackpadMonitor {
     // MARK: - Position click detection
 
     private func handlePositionClick() {
-        guard !positionClickFired, currentFingers == 1,
+        guard hasPositionClickTriggers, !positionClickFired, currentFingers == 1,
               let pos = lastSingleFingerPos else { return }
 
         let x = pos.x
@@ -963,7 +1160,7 @@ class TrackpadMonitor {
             gesture = nil
         }
 
-        if let gesture = gesture {
+        if let gesture = gesture, registeredTriggers.contains(where: { $0.gesture == gesture }) {
             positionClickFired = true
             DispatchQueue.main.async { [self] in
                 GestureLog.shared.logFromAnyThread("Position Click: \(gesture.rawValue) (x=\(String(format: "%.2f", x)), y=\(String(format: "%.2f", y)))", level: .detect)
@@ -973,7 +1170,8 @@ class TrackpadMonitor {
     }
 
     private func checkAndFireTipTap() {
-        guard let twoStart = twoFingerStartTime,
+        guard hasTipTapTriggers,
+              let twoStart = twoFingerStartTime,
               let restX = oneFingerRestX else {
             // TipTap rejected: missing state
             tipTapPending = false
@@ -1011,6 +1209,11 @@ class TrackpadMonitor {
         lastTipTapFiredTime = Date()
         // Reset rest tracking so switching sides requires the finger to settle again
         oneFingerStartTime = Date()
+
+        guard registeredTriggers.contains(where: { $0.gesture == gesture }) else {
+            return
+        }
+
         DispatchQueue.main.async { [self] in
             GestureLog.shared.logFromAnyThread("TipTap: \(gesture.rawValue) (restX=\(String(format: "%.2f", restX)))", level: .detect)
             fireGesture(gesture)
@@ -1023,83 +1226,105 @@ class TrackpadMonitor {
         let scrollHandler: (NSEvent) -> Void = { [weak self] e in self?.handleScroll(e) }
         let magnifyHandler: (NSEvent) -> Void = { [weak self] e in self?.handleMagnify(e) }
         let rotateHandler: (NSEvent) -> Void = { [weak self] e in self?.handleRotate(e) }
-            let dragHandler: (NSEvent) -> Void = { [weak self] e in self?.handleDrag(e) }
+        let dragHandler: (NSEvent) -> Void = { [weak self] e in self?.handleDrag(e) }
+
         // Left-click press: used for gesture logic (circle, position click)
         // Visual press state is handled in the multitouch callback via NSEvent.pressedMouseButtons
         let leftPressHandler: (NSEvent) -> Void = { [weak self] _ in
-            self?.trackpadIsPressed = true
-            if (self?.currentFingers ?? 0) >= 2 {
-                self?.pressDragDeltaX = 0
-                self?.pressDragActive = true
+            guard let self = self else { return }
+            self.trackpadIsPressed = true
+            if self.hasPressDragTriggers && self.currentFingers >= 2 {
+                self.pressDragDeltaX = 0
+                self.pressDragActive = true
             }
-            self?.handlePositionClick()
+            if self.hasPositionClickTriggers {
+                self.handlePositionClick()
+            }
         }
         let leftReleaseHandler: (NSEvent) -> Void = { [weak self] _ in
-            self?.handlePressDragEnd()
-            self?.trackpadIsPressed = false
-            self?.positionClickFired = false
+            guard let self = self else { return }
+            if self.hasPressDragTriggers {
+                self.handlePressDragEnd()
+            }
+            self.trackpadIsPressed = false
+            self.positionClickFired = false
             TrackpadMonitor.pendingSuppressClick = false
-            self?.resetCircleState()
-            self?.resetTriangleState()
-            self?.resetEdgeDragState()
-            self?.stopSuppressingMouse()
+            if self.has1FingerDrawGestures {
+                if !self.circlePoints.isEmpty || !self.trianglePoints.isEmpty || self.edgeSlideLastY != nil || self.circleDrawingActive {
+                    self.resetCircleState()
+                    self.resetTriangleState()
+                    self.resetEdgeDragState()
+                    self.stopSuppressingMouse()
+                }
+            }
         }
 
-        if let m = NSEvent.addGlobalMonitorForEvents(matching: .scrollWheel, handler: scrollHandler) {
-            monitors.append(m)
+        if hasSwipeTriggers {
+            if let m = NSEvent.addGlobalMonitorForEvents(matching: .scrollWheel, handler: scrollHandler) {
+                monitors.append(m)
+            }
+            if let m = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel, handler: { e in scrollHandler(e); return e }) {
+                monitors.append(m)
+            }
         }
-        if let m = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel, handler: { e in scrollHandler(e); return e }) {
-            monitors.append(m)
+        if hasPinchTriggers {
+            if let m = NSEvent.addGlobalMonitorForEvents(matching: .magnify, handler: magnifyHandler) {
+                monitors.append(m)
+            }
+            if let m = NSEvent.addLocalMonitorForEvents(matching: .magnify, handler: { e in magnifyHandler(e); return e }) {
+                monitors.append(m)
+            }
         }
-        if let m = NSEvent.addGlobalMonitorForEvents(matching: .magnify, handler: magnifyHandler) {
-            monitors.append(m)
+        if hasRotateTriggers {
+            if let m = NSEvent.addGlobalMonitorForEvents(matching: .rotate, handler: rotateHandler) {
+                monitors.append(m)
+            }
+            if let m = NSEvent.addLocalMonitorForEvents(matching: .rotate, handler: { e in rotateHandler(e); return e }) {
+                monitors.append(m)
+            }
         }
-        if let m = NSEvent.addLocalMonitorForEvents(matching: .magnify, handler: { e in magnifyHandler(e); return e }) {
-            monitors.append(m)
+        let needsMouseClicks = hasPressDragTriggers || hasClickTriggers || has1FingerDrawGestures
+        if needsMouseClicks {
+            if let m = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseDown, handler: leftPressHandler) {
+                monitors.append(m)
+            }
+            if let m = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown, handler: { e in leftPressHandler(e); return e }) {
+                monitors.append(m)
+            }
+            if let m = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseUp, handler: leftReleaseHandler) {
+                monitors.append(m)
+            }
+            if let m = NSEvent.addLocalMonitorForEvents(matching: .leftMouseUp, handler: { e in leftReleaseHandler(e); return e }) {
+                monitors.append(m)
+            }
         }
-        if let m = NSEvent.addGlobalMonitorForEvents(matching: .rotate, handler: rotateHandler) {
-            monitors.append(m)
+        if hasPressDragTriggers {
+            if let m = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseDragged, handler: dragHandler) {
+                monitors.append(m)
+            }
+            if let m = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDragged, handler: { e in dragHandler(e); return e }) {
+                monitors.append(m)
+            }
+            if let m = NSEvent.addGlobalMonitorForEvents(matching: .rightMouseDragged, handler: dragHandler) {
+                monitors.append(m)
+            }
+            if let m = NSEvent.addLocalMonitorForEvents(matching: .rightMouseDragged, handler: { e in dragHandler(e); return e }) {
+                monitors.append(m)
+            }
         }
-        if let m = NSEvent.addLocalMonitorForEvents(matching: .rotate, handler: { e in rotateHandler(e); return e }) {
-            monitors.append(m)
-        }
-        // Left mouse — gesture logic + visual
-        if let m = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseDown, handler: leftPressHandler) {
-            monitors.append(m)
-        }
-        if let m = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown, handler: { e in leftPressHandler(e); return e }) {
-            monitors.append(m)
-        }
-        if let m = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseUp, handler: leftReleaseHandler) {
-            monitors.append(m)
-        }
-        if let m = NSEvent.addLocalMonitorForEvents(matching: .leftMouseUp, handler: { e in leftReleaseHandler(e); return e }) {
-            monitors.append(m)
-        }
-        if let m = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseDragged, handler: dragHandler) {
-            monitors.append(m)
-        }
-        if let m = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDragged, handler: { e in dragHandler(e); return e }) {
-            monitors.append(m)
-        }
-        // Right mouse — 2-finger click on trackpad is a right-click by default
-        if let m = NSEvent.addGlobalMonitorForEvents(matching: .rightMouseDown, handler: leftPressHandler) {
-            monitors.append(m)
-        }
-        if let m = NSEvent.addLocalMonitorForEvents(matching: .rightMouseDown, handler: { e in leftPressHandler(e); return e }) {
-            monitors.append(m)
-        }
-        if let m = NSEvent.addGlobalMonitorForEvents(matching: .rightMouseUp, handler: leftReleaseHandler) {
-            monitors.append(m)
-        }
-        if let m = NSEvent.addLocalMonitorForEvents(matching: .rightMouseUp, handler: { e in leftReleaseHandler(e); return e }) {
-            monitors.append(m)
-        }
-        if let m = NSEvent.addGlobalMonitorForEvents(matching: .rightMouseDragged, handler: dragHandler) {
-            monitors.append(m)
-        }
-        if let m = NSEvent.addLocalMonitorForEvents(matching: .rightMouseDragged, handler: { e in dragHandler(e); return e }) {
-            monitors.append(m)
+        if hasTwoFingerClick {
+            if let m = NSEvent.addGlobalMonitorForEvents(matching: .rightMouseDown, handler: leftPressHandler) {
+                monitors.append(m)
+            }
+            if let m = NSEvent.addLocalMonitorForEvents(matching: .rightMouseDown, handler: { e in leftPressHandler(e); return e }) {
+                monitors.append(m)
+            }
+            if let m = NSEvent.addGlobalMonitorForEvents(matching: .rightMouseUp, handler: leftReleaseHandler) {
+                monitors.append(m)
+            }
+            if let m = NSEvent.addLocalMonitorForEvents(matching: .rightMouseUp, handler: { e in leftReleaseHandler(e); return e }) {
+                monitors.append(m)
+            }
         }
     }
 
@@ -1118,7 +1343,9 @@ class TrackpadMonitor {
         let threshold: CGFloat = stored > 0 ? CGFloat(stored) : 300
         if abs(pressDragDeltaX) > threshold {
             let gesture: TrackpadGesture = pressDragDeltaX > 0 ? .twoFingerPressDragRight : .twoFingerPressDragLeft
-            fireGesture(gesture)
+            if registeredTriggers.contains(where: { $0.gesture == gesture }) {
+                fireGesture(gesture)
+            }
         }
         pressDragDeltaX = 0; pressDragActive = false
     }
@@ -1139,6 +1366,19 @@ class TrackpadMonitor {
         if scrollFingerCount == 0 {
             scrollFingerCount = max(currentFingers, 2)
         }
+
+        let fingers = scrollFingerCount
+        let isConfiguredForFingers = (fingers == 2 && hasTwoFingerSwipe) ||
+                                     (fingers == 3 && hasThreeFingerSwipe) ||
+                                     (fingers == 4 && hasFourFingerSwipe)
+
+        guard isConfiguredForFingers else {
+            if event.phase == .ended || event.phase == .cancelled {
+                scrollDeltaX = 0; scrollDeltaY = 0; scrollFingerCount = 0; scrollStartTime = nil
+            }
+            return
+        }
+
         if scrollStartTime == nil {
             scrollStartTime = Date()
         }
@@ -1166,7 +1406,7 @@ class TrackpadMonitor {
             } else {
                 gesture = swipeGesture(fingers: scrollFingerCount, direction: scrollDeltaY > 0 ? .up : .down)
             }
-            if let gesture = gesture {
+            if let gesture = gesture, registeredTriggers.contains(where: { $0.gesture == gesture }) {
                 let minVelocity = swipeMinVelocity(for: gesture)
                 if velocity >= minVelocity {
                     GestureLog.shared.logFromAnyThread("Swipe velocity: \(Int(velocity)) pts/sec (min: \(Int(minVelocity)))", level: .detect)
@@ -1204,8 +1444,11 @@ class TrackpadMonitor {
         magnification += event.magnification
         if abs(magnification) > 0.02 { gestureConsumed = true }
         if event.phase == .ended || event.phase == .cancelled {
-            if magnification > 0.1 { fireGesture(.twoFingerPinchOut) }
-            else if magnification < -0.1 { fireGesture(.twoFingerPinchIn) }
+            if magnification > 0.1 && registeredTriggers.contains(where: { $0.gesture == .twoFingerPinchOut }) {
+                fireGesture(.twoFingerPinchOut)
+            } else if magnification < -0.1 && registeredTriggers.contains(where: { $0.gesture == .twoFingerPinchIn }) {
+                fireGesture(.twoFingerPinchIn)
+            }
             magnification = 0
         }
     }
@@ -1217,8 +1460,11 @@ class TrackpadMonitor {
         rotation += CGFloat(event.rotation)
         if abs(rotation) > 1 { gestureConsumed = true }
         if event.phase == .ended || event.phase == .cancelled {
-            if rotation > 5 { fireGesture(.twoFingerRotateRight) }
-            else if rotation < -5 { fireGesture(.twoFingerRotateLeft) }
+            if rotation > 5 && registeredTriggers.contains(where: { $0.gesture == .twoFingerRotateRight }) {
+                fireGesture(.twoFingerRotateRight)
+            } else if rotation < -5 && registeredTriggers.contains(where: { $0.gesture == .twoFingerRotateLeft }) {
+                fireGesture(.twoFingerRotateLeft)
+            }
             rotation = 0
         }
     }
@@ -1363,18 +1609,6 @@ class TrackpadMonitor {
     // MARK: - Fire
 
     private func fireGesture(_ gesture: TrackpadGesture) {
-        NSLog("[TrackpadMonitor] Detected gesture: %@", gesture.rawValue)
-
-        // Record every detected gesture for statistics (always, even when paused)
-        GestureStatistics.shared.recordDetectionFromAnyThread(gesture.rawValue)
-
-        // Check global toggle — detect but don't fire when disabled
-        let globalEnabled = UserDefaults.standard.object(forKey: "GTTGlobalEnabled") as? Bool ?? true
-        guard globalEnabled else {
-            GestureLog.shared.logFromAnyThread("Gesture \(gesture.rawValue) — paused", level: .noMatch)
-            return
-        }
-
         // Get the frontmost app's bundle ID
         let frontBundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
 
@@ -1386,18 +1620,31 @@ class TrackpadMonitor {
         // App-specific triggers take priority — if any exist for this app, skip globals
         let toFire = appSpecific.isEmpty ? global : appSpecific
 
-        if toFire.isEmpty {
+        guard !toFire.isEmpty else {
             GestureLog.shared.logFromAnyThread("Gesture \(gesture.rawValue) — no matching trigger", level: .noMatch)
-        } else {
-            for trigger in toFire {
-                let actionNames = trigger.actions.map { $0.actionType.rawValue }.joined(separator: ", ")
-                let scope = trigger.appBundleID != nil ? "app-specific" : "global"
-                GestureLog.shared.logFromAnyThread("Fired: \(gesture.rawValue) → \(actionNames) (\(scope))", level: .fire)
-                GestureStatistics.shared.recordFireFromAnyThread(gesture.rawValue)
-                ActionExecutor.executeActions(trigger.actions)
-                LiveTouchState.shared.flashTrigger(trigger.id)
-                NotificationCenter.default.post(name: .gestureDidFire, object: nil, userInfo: ["name": gesture.rawValue])
-            }
+            return
+        }
+
+        NSLog("[TrackpadMonitor] Detected gesture: %@", gesture.rawValue)
+
+        // Record detected gesture for statistics only when it matches an active trigger
+        GestureStatistics.shared.recordDetectionFromAnyThread(gesture.rawValue)
+
+        // Check global toggle — detect but don't fire when disabled
+        let globalEnabled = UserDefaults.standard.object(forKey: "GTTGlobalEnabled") as? Bool ?? true
+        guard globalEnabled else {
+            GestureLog.shared.logFromAnyThread("Gesture \(gesture.rawValue) — paused", level: .noMatch)
+            return
+        }
+
+        for trigger in toFire {
+            let actionNames = trigger.actions.map { $0.actionType.rawValue }.joined(separator: ", ")
+            let scope = trigger.appBundleID != nil ? "app-specific" : "global"
+            GestureLog.shared.logFromAnyThread("Fired: \(gesture.rawValue) → \(actionNames) (\(scope))", level: .fire)
+            GestureStatistics.shared.recordFireFromAnyThread(gesture.rawValue)
+            ActionExecutor.executeActions(trigger.actions)
+            LiveTouchState.shared.flashTrigger(trigger.id)
+            NotificationCenter.default.post(name: .gestureDidFire, object: nil, userInfo: ["name": gesture.rawValue])
         }
     }
 
@@ -1414,29 +1661,60 @@ class TrackpadMonitor {
         }
         monitors.removeAll()
         registeredTriggers.removeAll()
+
+        hasCircleClockwise = false
+        hasCircleCounterClockwise = false
         hasCircleTriggers = false
         hasTriangleTriggers = false
         hasEdgeSlideTriggers = false
+        has1FingerDrawGestures = false
+        hasTwoFingerSwipe = false
+        hasThreeFingerSwipe = false
+        hasFourFingerSwipe = false
+        hasSwipeTriggers = false
+        hasPinchTriggers = false
+        hasRotateTriggers = false
+        hasPressDragTriggers = false
+        hasTipTapLeft = false
+        hasTipTapRight = false
+        hasTipTapTriggers = false
+        hasTipTapMiddle = false
+        hasTwoFingerTap = false
+        hasTwoFingerDoubleTap = false
+        hasThreeFingerTap = false
+        hasFourFingerTap = false
+        hasFiveFingerTap = false
+        hasTapTriggers = false
+        hasPositionClickTriggers = false
+        hasTwoFingerClick = false
+        hasThreeFingerClick = false
+        hasClickTriggers = false
+
         trackpadIsPressed = false
         TrackpadMonitor.pendingSuppressClick = false
 
-        if multitouchActive {
-            if let unregister = _MTUnregisterContactFrameCallback,
-               let stop = _MTDeviceStop {
-                for device in devices {
-                    unregister(device, touchCallback)
-                    stop(device)
-                }
-            }
-            devices.removeAll()
-            multitouchActive = false
-            if sharedTrackpadMonitor === self {
-                sharedTrackpadMonitor = nil
-            }
-        }
+        doubleTapTimer?.cancel()
+        doubleTapTimer = nil
+        lastTwoFingerTapTime = nil
+        touchBegan = nil
+        peakFingers = 0
+        currentFingers = 0
+        tipTapPending = false
+        tipTapMiddlePending = false
+        oneFingerStartTime = nil
+        twoFingerStartTime = nil
+        twoFingerRestTime = nil
+        threeFingerStartTime = nil
+        lastSingleFingerPos = nil
+        positionClickFired = false
+
+        stopMultitouchMonitoring()
     }
 
     deinit {
+        if let obs = visualizerObserver {
+            NotificationCenter.default.removeObserver(obs)
+        }
         unregisterAll()
     }
 }

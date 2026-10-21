@@ -2,6 +2,7 @@ import Foundation
 
 extension Notification.Name {
     static let gestureDidFire = Notification.Name("GTTGestureDidFire")
+    static let visualizerStateChanged = Notification.Name("GTTVisualizerStateChanged")
 }
 
 struct TouchPoint: Identifiable {
@@ -18,20 +19,60 @@ struct TrailPoint {
 }
 
 @MainActor
+final class TriggerFlashState: ObservableObject {
+    static let shared = TriggerFlashState()
+    @Published var lastFiredTriggerID: UUID?
+
+    private var clearTask: Task<Void, Never>?
+
+    func flashTrigger(_ id: UUID) {
+        clearTask?.cancel()
+        lastFiredTriggerID = id
+        clearTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 600_000_000)
+            if !Task.isCancelled && self.lastFiredTriggerID == id {
+                self.lastFiredTriggerID = nil
+            }
+        }
+    }
+}
+
+@MainActor
 class LiveTouchState: ObservableObject {
     static let shared = LiveTouchState()
     @Published var touches: [TouchPoint] = []
     @Published var isPressed: Bool = false
     @Published var lastFiredTriggerID: UUID?
 
+    /// Active state flag: when false, visualizer updates can be avoided
+    nonisolated(unsafe) static var isVisualizerActive: Bool = false
+
+    nonisolated var isVisualizerActive: Bool {
+        get { Self.isVisualizerActive }
+        set {
+            if Self.isVisualizerActive != newValue {
+                Self.isVisualizerActive = newValue
+                DispatchQueue.main.async {
+                    NotificationCenter.default.post(name: .visualizerStateChanged, object: nil)
+                }
+            }
+        }
+    }
+
     /// Trail history per finger ID — each finger gets a list of recent positions
     @Published var trails: [Int: [TrailPoint]] = [:]
     private let maxTrailAge: TimeInterval = 0.6
     private let maxTrailPoints: Int = 40
     private var fadeTimer: Timer?
+    private var flashTask: Task<Void, Never>?
 
     nonisolated func update(_ points: [TouchPoint]) {
         Task { @MainActor in
+            // Fast exit if both incoming points and current state are empty and not pressed
+            if points.isEmpty && self.touches.isEmpty && self.trails.isEmpty && !self.isPressed {
+                return
+            }
+
             self.touches = points
 
             // Clear press state when all fingers lift
@@ -111,16 +152,21 @@ class LiveTouchState: ObservableObject {
 
     nonisolated func setPressed(_ pressed: Bool) {
         Task { @MainActor in
+            guard self.isPressed != pressed else { return }
             self.isPressed = pressed
         }
     }
 
     nonisolated func flashTrigger(_ id: UUID) {
         Task { @MainActor in
+            TriggerFlashState.shared.flashTrigger(id)
+            self.flashTask?.cancel()
             self.lastFiredTriggerID = id
-            try? await Task.sleep(nanoseconds: 600_000_000)
-            if self.lastFiredTriggerID == id {
-                self.lastFiredTriggerID = nil
+            self.flashTask = Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 600_000_000)
+                if !Task.isCancelled && self.lastFiredTriggerID == id {
+                    self.lastFiredTriggerID = nil
+                }
             }
         }
     }
