@@ -47,16 +47,25 @@ class LiveTouchState: ObservableObject {
     /// Active state flag: when false, visualizer updates can be avoided
     nonisolated(unsafe) static var isVisualizerActive: Bool = false
 
-    nonisolated var isVisualizerActive: Bool {
-        get { Self.isVisualizerActive }
-        set {
-            if Self.isVisualizerActive != newValue {
-                Self.isVisualizerActive = newValue
-                DispatchQueue.main.async {
-                    NotificationCenter.default.post(name: .visualizerStateChanged, object: nil)
+    nonisolated static func setActive(_ active: Bool) {
+        if isVisualizerActive != active {
+            isVisualizerActive = active
+            Task { @MainActor in
+                if !active {
+                    LiveTouchState.shared.fadeTimer?.invalidate()
+                    LiveTouchState.shared.fadeTimer = nil
+                    LiveTouchState.shared.touches.removeAll()
+                    LiveTouchState.shared.trails.removeAll()
+                    LiveTouchState.shared.isPressed = false
                 }
+                NotificationCenter.default.post(name: .visualizerStateChanged, object: nil)
             }
         }
+    }
+
+    nonisolated var isVisualizerActive: Bool {
+        get { Self.isVisualizerActive }
+        set { Self.setActive(newValue) }
     }
 
     /// Trail history per finger ID — each finger gets a list of recent positions
@@ -67,7 +76,9 @@ class LiveTouchState: ObservableObject {
     private var flashTask: Task<Void, Never>?
 
     nonisolated func update(_ points: [TouchPoint]) {
+        guard Self.isVisualizerActive else { return }
         Task { @MainActor in
+            guard Self.isVisualizerActive else { return }
             // Fast exit if both incoming points and current state are empty and not pressed
             if points.isEmpty && self.touches.isEmpty && self.trails.isEmpty && !self.isPressed {
                 return
@@ -151,6 +162,7 @@ class LiveTouchState: ObservableObject {
     }
 
     nonisolated func setPressed(_ pressed: Bool) {
+        guard Self.isVisualizerActive else { return }
         Task { @MainActor in
             guard self.isPressed != pressed else { return }
             self.isPressed = pressed

@@ -92,12 +92,6 @@ struct LiveTouchView: View {
             }
         }
         .aspectRatio(1.4, contentMode: .fit)
-        .onAppear {
-            LiveTouchState.shared.isVisualizerActive = true
-        }
-        .onDisappear {
-            LiveTouchState.shared.isVisualizerActive = false
-        }
     }
 }
 
